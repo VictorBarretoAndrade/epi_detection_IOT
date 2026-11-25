@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Dados gerados
+pc/datasets/
+pc/runs/
+pc/infracoes/
+pc/capturas/
+pc/teste_camera.jpg
+pc/**/*_resultado.jpg
+
+# Pesos: so o modelo de capacete pronto vai para o Git (6 MB).
+# yolo11n.pt e baixado sozinho pela Ultralytics; epi.pt e o que voce treinar.
+pc/modelos/*.pt
+!pc/modelos/capacete_yolov8n.pt
+*.part
+
+# PlatformIO
+firmware/**/.pio/
+firmware/**/.vscode/
+
+# Senhas do Wi-Fi
+firmware/**/include/credenciais.h

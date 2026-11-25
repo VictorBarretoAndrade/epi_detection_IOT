@@ -1,0 +1,52 @@
+# Configuracao do detector de EPI (PC).
+# Caminhos relativos sao a partir desta pasta (pc/).
+
+[camera]
+# esp32cam = fotos da ESP32-CAM | webcam = camera do notebook | pasta = imagens de uma pasta
+fonte = "esp32cam"
+# IP que a ESP32-CAM mostra no Monitor Serial. Tambem funciona "http://epi-cam.local/capture"
+# se a sua rede suportar mDNS.
+url = "http://10.247.216.82/capture"
+flash = false          # true acende o flash da ESP32-CAM em cada foto
+timeout_s = 3.0
+rotacao = 90           # 0, 90, 180, 270 (horario). A placa estava de lado no teste: 90 deixa em pe.
+webcam_indice = 0
+pasta = "imagens_teste"
+
+[modelo]
+# Pesos YOLO treinados para capacete.
+#  - capacete_yolov8n.pt: pre-treinado do Hugging Face (keremberke/yolov8n-hard-hat-detection),
+#    classes Hardhat / NO-Hardhat. Ja funciona.
+#  - epi.pt: o que voce treinar com treinar_modelo.py / Colab (troque aqui quando tiver).
+arquivo = "modelos/capacete_yolov8n.pt"
+confianca = 0.40       # deteccoes abaixo disso sao ignoradas
+imgsz = 640
+dispositivo = "cpu"    # "0" se tiver GPU NVIDIA com PyTorch CUDA
+
+[classes]
+# Nomes das classes do SEU modelo (maiusculas/minusculas tanto faz).
+# Os padroes cobrem: dataset Construction-PPE da Ultralytics (helmet/no_helmet/Person),
+# "Hard Hat Workers" (helmet/head/person) e modelos "Hardhat/NO-Hardhat".
+capacete = ["helmet", "hardhat", "hard_hat", "hard-hat"]
+sem_capacete = ["no_helmet", "no-hardhat", "no-helmet", "head"]
+pessoa = ["person", "worker"]
+
+[regras]
+confirmacoes = 2                    # resultados iguais seguidos antes de trocar o LED
+confirmacoes_vazio = 4              # para apagar (ninguem) exige mais: evita piscar se a pessoa mexe
+exigir_capacete_por_pessoa = true   # cada pessoa precisa de capacete NA CABECA (nao na mao)
+altura_cabeca = 0.4                 # fracao de cima da caixa da pessoa considerada "cabeca"
+
+[led]
+# http = ESP32 pelo Wi-Fi | serial = ESP32 ligado no USB do PC | nenhum = sem LEDs
+modo = "http"
+url = "http://10.247.216.199"       # IP que o ESP32 dos LEDs mostra no Monitor Serial
+porta_serial = "COM5"
+baud = 115200
+timeout_s = 1.0
+
+[app]
+intervalo_s = 0.5        # tempo minimo entre fotos
+mostrar_janela = true
+salvar_infracoes = true  # salva foto quando o estado vira SEM_EPI
+pasta_infracoes = "infracoes"

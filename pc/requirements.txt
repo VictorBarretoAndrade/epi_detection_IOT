@@ -1,0 +1,6 @@
+# Python 3.11+ (testado com 3.12). Instala PyTorch CPU automaticamente no Windows.
+ultralytics>=8.3
+requests>=2.31
+pyserial>=3.5
+# Opcional: compilar/gravar os firmwares pelo terminal (sem a extensao do VS Code)
+platformio>=6.1
