@@ -4,17 +4,25 @@
  * Rotas HTTP (porta 80):
  *   GET /capture          -> tira uma foto NOVA e devolve o JPEG
  *   GET /capture?flash=1  -> idem, acendendo o LED de flash durante a foto
- *   GET /status           -> JSON com IP, sinal Wi-Fi, fotos servidas...
+ *   GET /status           -> JSON com IP, sinal Wi-Fi, fotos servidas, resolucao...
+ *   GET /config?resolucao=hvga&qualidade=15 -> muda resolucao/qualidade sem regravar
  *   GET /                 -> pagina de teste (mostra a foto no navegador)
+ *
+ * Video continuo (porta 81) - MENOR LATENCIA, e o que o PC usa:
+ *   GET :81/stream        -> MJPEG (multipart), quadros sem parar numa unica conexao
+ *   GET :81/stream?fps=15 -> limita a taxa de quadros
  *
  * Tambem responde por mDNS em http://epi-cam.local (quando a rede permite).
  */
 #include <Arduino.h>
+#include <ArduinoOTA.h>
 #include <ESPmDNS.h>
 #include <WebServer.h>
 #include <WiFi.h>
 
 #include "esp_camera.h"
+#include "esp_http_server.h"
+#include "lwip/sockets.h"
 #include "soc/rtc_cntl_reg.h"
 #include "soc/soc.h"
 
@@ -74,7 +82,8 @@
 static const uint32_t TEMPO_MAX_SEM_WIFI_MS = 60000;  // reinicia se ficar 1 min sem Wi-Fi
 
 WebServer servidor(80);
-static uint32_t fotosServidas = 0;
+static httpd_handle_t servidorVideo = nullptr;
+static volatile uint32_t fotosServidas = 0;
 static uint32_t falhasCaptura = 0;
 static uint32_t desconectadoDesde = 0;
 static bool mdnsIniciado = false;
@@ -174,6 +183,26 @@ static void anunciarEndereco() {
   }
 }
 
+// Gravacao pelo Wi-Fi (PlatformIO: ambiente esp32cam_ota). Evita depender do USB/base MB.
+static void iniciarOTA() {
+  ArduinoOTA.setHostname(NOME_HOST);
+  ArduinoOTA.setMdnsEnabled(false);  // o mDNS ja foi iniciado em anunciarEndereco()
+#ifdef OTA_SENHA
+  ArduinoOTA.setPassword(OTA_SENHA);
+#endif
+  ArduinoOTA.onStart([]() {
+    Serial.println("OTA: recebendo firmware novo...");
+    if (servidorVideo != nullptr) {
+      httpd_stop(servidorVideo);  // libera a camera e a rede para a gravacao
+      servidorVideo = nullptr;
+    }
+  });
+  ArduinoOTA.onEnd([]() { Serial.println("OTA: pronto, reiniciando."); });
+  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("OTA: erro %u\n", e); });
+  ArduinoOTA.begin();
+  Serial.println("OTA pelo Wi-Fi ativo (porta 3232).");
+}
+
 // ---------------------------------------------------------------------------
 // Rotas HTTP
 // ---------------------------------------------------------------------------
@@ -220,16 +249,148 @@ static void rotaCaptura() {
   digitalWrite(PINO_LED_STATUS, (fotosServidas & 1) ? LOW : HIGH);  // pisca a cada foto
 }
 
+// Resolucoes aceitas em /config (nao pode passar do TAMANHO_FOTO usado no boot).
+struct Resolucao {
+  const char *nome;
+  framesize_t tamanho;
+};
+static const Resolucao RESOLUCOES[] = {
+    {"qqvga", FRAMESIZE_QQVGA},  // 160x120
+    {"qvga", FRAMESIZE_QVGA},    // 320x240
+    {"cif", FRAMESIZE_CIF},      // 400x296
+    {"hvga", FRAMESIZE_HVGA},    // 480x320
+    {"vga", FRAMESIZE_VGA},      // 640x480
+};
+
+static const char *nomeResolucao(framesize_t t) {
+  for (const auto &r : RESOLUCOES) {
+    if (r.tamanho == t) return r.nome;
+  }
+  return "?";
+}
+
 static void rotaStatus() {
-  char json[256];
+  sensor_t *s = esp_camera_sensor_get();
+  char json[320];
   snprintf(json, sizeof(json),
            "{\"dispositivo\":\"esp32cam\",\"ip\":\"%s\",\"rssi\":%d,\"uptime_s\":%lu,"
-           "\"fotos\":%lu,\"falhas\":%lu,\"psram\":%s,\"heap_livre\":%u}",
+           "\"fotos\":%lu,\"falhas\":%lu,\"psram\":%s,\"heap_livre\":%u,"
+           "\"resolucao\":\"%s\",\"qualidade\":%d}",
            WiFi.localIP().toString().c_str(), WiFi.RSSI(), (unsigned long)(millis() / 1000),
            (unsigned long)fotosServidas, (unsigned long)falhasCaptura, psramFound() ? "true" : "false",
-           (unsigned)ESP.getFreeHeap());
+           (unsigned)ESP.getFreeHeap(), s ? nomeResolucao(s->status.framesize) : "?",
+           s ? s->status.quality : -1);
   servidor.sendHeader("Access-Control-Allow-Origin", "*");
   servidor.send(200, "application/json", json);
+}
+
+// GET /config?resolucao=hvga&qualidade=15  -> muda sem regravar (volta ao padrao ao reiniciar)
+static void rotaConfig() {
+  sensor_t *s = esp_camera_sensor_get();
+  if (s == nullptr) {
+    servidor.send(503, "text/plain", "Camera indisponivel");
+    return;
+  }
+  if (servidor.hasArg("resolucao")) {
+    String nome = servidor.arg("resolucao");
+    nome.toLowerCase();
+    bool achou = false;
+    for (const auto &r : RESOLUCOES) {
+      if (nome == r.nome) {
+        if (psramFound() && r.tamanho > TAMANHO_FOTO) {
+          servidor.send(400, "text/plain", "Resolucao maior que a do boot (TAMANHO_FOTO)");
+          return;
+        }
+        s->set_framesize(s, r.tamanho);
+        achou = true;
+      }
+    }
+    if (!achou) {
+      servidor.send(400, "text/plain", "Use resolucao=qqvga|qvga|cif|hvga|vga");
+      return;
+    }
+  }
+  if (servidor.hasArg("qualidade")) {
+    const int q = servidor.arg("qualidade").toInt();
+    if (q < 4 || q > 63) {
+      servidor.send(400, "text/plain", "qualidade deve ser de 4 (melhor) a 63 (pior)");
+      return;
+    }
+    s->set_quality(s, q);
+  }
+  rotaStatus();
+}
+
+// ---------------------------------------------------------------------------
+// Video MJPEG na porta 81 (servidor proprio do ESP-IDF, roda em outra tarefa:
+// a porta 80 continua respondendo /capture, /status e /config enquanto o video passa)
+// ---------------------------------------------------------------------------
+#define LIMITE_PARTE "epi7b3c9f1e2d"
+static const char *TIPO_VIDEO = "multipart/x-mixed-replace;boundary=" LIMITE_PARTE;
+static const char *SEPARADOR = "\r\n--" LIMITE_PARTE "\r\n";
+static const char *CABECALHO_QUADRO = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
+
+static esp_err_t rotaVideo(httpd_req_t *req) {
+  // fps maximo opcional: /stream?fps=15
+  uint32_t intervaloMs = 0;
+  char query[32];
+  char valor[8];
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+      httpd_query_key_value(query, "fps", valor, sizeof(valor)) == ESP_OK && atoi(valor) > 0) {
+    intervaloMs = 1000 / atoi(valor);
+  }
+
+  httpd_resp_set_type(req, TIPO_VIDEO);
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  const int fd = httpd_req_to_sockfd(req);
+  const int um = 1;
+  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &um, sizeof(um));  // manda cada quadro na hora
+
+  char cabecalho[64];
+  uint32_t ultimo = 0;
+  int falhasSeguidas = 0;
+  while (true) {
+    if (intervaloMs > 0) {
+      const uint32_t passou = millis() - ultimo;
+      if (passou < intervaloMs) delay(intervaloMs - passou);
+      ultimo = millis();
+    }
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (fb == nullptr) {
+      falhasCaptura++;
+      if (++falhasSeguidas > 20) break;  // camera com problema: encerra e o PC reconecta
+      delay(50);
+      continue;
+    }
+    falhasSeguidas = 0;
+    const int n = snprintf(cabecalho, sizeof(cabecalho), CABECALHO_QUADRO, (unsigned)fb->len);
+    esp_err_t res = httpd_resp_send_chunk(req, SEPARADOR, strlen(SEPARADOR));
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, cabecalho, n);
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, reinterpret_cast<const char *>(fb->buf), fb->len);
+    esp_camera_fb_return(fb);
+    if (res != ESP_OK) break;  // cliente desconectou
+    fotosServidas++;
+  }
+  return ESP_OK;
+}
+
+static void iniciarVideo() {
+  httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+  cfg.server_port = 81;
+  cfg.ctrl_port = 32769;
+  cfg.max_open_sockets = 3;
+  cfg.lru_purge_enable = true;  // conexao velha e derrubada se chegar uma nova
+  if (httpd_start(&servidorVideo, &cfg) != ESP_OK) {
+    Serial.println("ERRO: nao iniciou o video na porta 81");
+    return;
+  }
+  httpd_uri_t uri = {};
+  uri.uri = "/stream";
+  uri.method = HTTP_GET;
+  uri.handler = rotaVideo;
+  httpd_register_uri_handler(servidorVideo, &uri);
+  Serial.println("Video MJPEG na porta 81: /stream");
 }
 
 static const char PAGINA[] PROGMEM = R"HTML(<!doctype html>
@@ -245,6 +406,7 @@ static const char PAGINA[] PROGMEM = R"HTML(<!doctype html>
 <h2>ESP32-CAM &mdash; detector de EPI</h2>
 <p>O PC busca as fotos em <code>/capture</code>.</p>
 <button onclick="atualizar()">Nova foto</button>
+<button onclick="aoVivo()">Video ao vivo</button>
 <label><input type="checkbox" id="auto"> atualizar sozinho</label>
 <label><input type="checkbox" id="flash"> flash</label>
 <img id="foto" alt="foto">
@@ -255,6 +417,10 @@ function atualizar(){
   document.getElementById('foto').src='/capture?t='+Date.now()+f;
   fetch('/status').then(r=>r.json()).then(j=>{
     document.getElementById('info').textContent=JSON.stringify(j,null,1);});
+}
+function aoVivo(){
+  document.getElementById('auto').checked=false;
+  document.getElementById('foto').src=location.protocol+'//'+location.hostname+':81/stream';
 }
 document.getElementById('foto').onload=()=>{
   if(document.getElementById('auto').checked) setTimeout(atualizar,300);
@@ -297,14 +463,18 @@ void setup() {
   servidor.on("/capture", HTTP_GET, rotaCaptura);
   servidor.on("/captura", HTTP_GET, rotaCaptura);  // apelido em portugues
   servidor.on("/status", HTTP_GET, rotaStatus);
+  servidor.on("/config", HTTP_GET, rotaConfig);
   servidor.on("/", HTTP_GET, rotaRaiz);
   servidor.onNotFound([]() { servidor.send(404, "text/plain", "Rota nao encontrada. Use /capture"); });
+  iniciarVideo();
+  iniciarOTA();
   servidor.begin();
   Serial.println("Servidor HTTP na porta 80.");
 }
 
 void loop() {
   servidor.handleClient();
+  ArduinoOTA.handle();
 
   // Monitora o Wi-Fi: anuncia o IP ao reconectar e reinicia se ficar muito tempo fora.
   static bool estavaConectado = WiFi.status() == WL_CONNECTED;

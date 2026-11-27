@@ -10,6 +10,8 @@ from pathlib import Path
 class ConfigCamera:
     fonte: str = "esp32cam"  # esp32cam | webcam | pasta
     url: str = "http://192.168.0.50/capture"
+    resolucao: str = ""  # qqvga | qvga | cif | hvga | vga ("" = a do firmware)
+    qualidade_jpeg: int = 0  # 4 (melhor) a 63 (pior); 0 = a do firmware
     flash: bool = False
     timeout_s: float = 3.0
     rotacao: int = 0  # 0, 90, 180 ou 270 graus (sentido horario) se a camera estiver de lado

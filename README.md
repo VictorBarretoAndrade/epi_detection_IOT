@@ -165,13 +165,17 @@ Edite `pc/config.toml`:
 
 ```toml
 [camera]
-url = "http://192.168.0.50/capture"   # IP da ESP32-CAM
-rotacao = 90                          # se a foto vier de lado (0, 90, 180, 270)
+url = "http://epi-cam.local/capture"  # nome mDNS da ESP32-CAM (ou o IP: "http://192.168.0.50/capture")
+rotacao = 270                         # se a foto vier de lado/invertida (0, 90, 180, 270)
 
 [led]
 modo = "http"
-url = "http://192.168.0.51"           # IP do ESP32 dos LEDs
+url = "http://epi-led.local"          # nome mDNS do ESP32 dos LEDs (ou o IP)
 ```
+
+Pelo nome `.local` não é preciso mudar nada quando o hotspot do celular troca de rede: o PC
+resolve o nome uma vez e resolve de novo se a placa parar de responder. Se o seu Windows não
+encontrar `epi-cam.local`, use os IPs que as placas mostram no Monitor Serial.
 
 ## Passo 6 — Testar por partes
 

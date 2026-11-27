@@ -4,12 +4,17 @@
 [camera]
 # esp32cam = fotos da ESP32-CAM | webcam = camera do notebook | pasta = imagens de uma pasta
 fonte = "esp32cam"
-# IP que a ESP32-CAM mostra no Monitor Serial. Tambem funciona "http://epi-cam.local/capture"
-# se a sua rede suportar mDNS.
-url = "http://10.247.216.82/capture"
+# Pelo nome (mDNS) nao precisa mudar quando o hotspot troca de rede. Se o seu PC nao resolver
+# ".local", use o IP que a ESP32-CAM mostra no Monitor Serial, ex.: "http://10.216.49.82/capture".
+# ":81/stream" = video continuo (menor latencia). "/capture" = foto a foto.
+url = "http://epi-cam.local:81/stream?fps=15"
+# Menor = foto chega mais rapido (menos latencia), mas com menos detalhe.
+resolucao = "hvga"     # qqvga 160x120 | qvga 320x240 | cif 400x296 | hvga 480x320 | vga 640x480
+qualidade_jpeg = 20    # 4 (melhor, arquivo grande) a 63 (pior, arquivo pequeno)
+# Medido no hotspot: vga/12 = 15 KB, 190-340 ms | hvga/20 = 7 KB, 105-255 ms | qvga/15 = 6 KB, 130-160 ms
 flash = false          # true acende o flash da ESP32-CAM em cada foto
 timeout_s = 3.0
-rotacao = 90           # 0, 90, 180, 270 (horario). A placa estava de lado no teste: 90 deixa em pe.
+rotacao = 270          # 0, 90, 180, 270 (horario). Depende de como a placa esta montada: ajuste olhando a janela.
 webcam_indice = 0
 pasta = "imagens_teste"
 
@@ -20,7 +25,7 @@ pasta = "imagens_teste"
 #  - epi.pt: o que voce treinar com treinar_modelo.py / Colab (troque aqui quando tiver).
 arquivo = "modelos/capacete_yolov8n.pt"
 confianca = 0.40       # deteccoes abaixo disso sao ignoradas
-imgsz = 640
+imgsz = 480           # 480 deu confianca maior e e mais rapido que 640 com fotos da ESP32-CAM
 dispositivo = "cpu"    # "0" se tiver GPU NVIDIA com PyTorch CUDA
 
 [classes]
@@ -40,13 +45,13 @@ altura_cabeca = 0.4                 # fracao de cima da caixa da pessoa consider
 [led]
 # http = ESP32 pelo Wi-Fi | serial = ESP32 ligado no USB do PC | nenhum = sem LEDs
 modo = "http"
-url = "http://10.247.216.199"       # IP que o ESP32 dos LEDs mostra no Monitor Serial
+url = "http://epi-led.local"        # ou o IP do Monitor Serial, ex.: "http://10.216.49.199"
 porta_serial = "COM5"
 baud = 115200
-timeout_s = 1.0
+timeout_s = 2.0
 
 [app]
-intervalo_s = 0.5        # tempo minimo entre fotos
+intervalo_s = 0.0        # tempo minimo entre analises (0 = o mais rapido que a camera mandar)
 mostrar_janela = true
 salvar_infracoes = true  # salva foto quando o estado vira SEM_EPI
 pasta_infracoes = "infracoes"
